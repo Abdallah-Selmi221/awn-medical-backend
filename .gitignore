@@ -34,3 +34,4 @@ test_rag_endpoint.py
 *.log
 .DS_Store
 Thumbs.db
+

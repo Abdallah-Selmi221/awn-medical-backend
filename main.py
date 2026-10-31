@@ -34,10 +34,13 @@ def get_genai():
             HAS_GENAI_SDK = False
     return genai
 
-# Optional PyTorch runtime for Multiclass Vision AI
+# Optional PyTorch runtime for Multiclass Vision AI (Memory-Optimized for Render 512MB Free Tier)
 try:
     import torch
     import torchvision.transforms as transforms
+    # Restrict OpenMP and inter-op threads to prevent thread-pool memory explosion on 512MB RAM
+    torch.set_num_threads(1)
+    torch.set_num_interop_threads(1)
     HAS_TORCH = True
 except Exception:
     torch = None
