@@ -1,0 +1,33 @@
+# Git and Version Control
+.git
+.gitignore
+.github
+
+# Python Bytecode and Caches
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+
+# Virtual Environments
+env/
+venv/
+.venv/
+ENV/
+
+# Development, Kaggle & Training Artifacts
+kaggle.json
+kernel-metadata.json
+*.ipynb
+datasets/
+kaggle_logs/
+kaggle_output/
+build_notebook.py
+prepare_dataset.py
+test_*.py
+
+# Documentation & IDE
+.vscode/
+.idea/
+*.md

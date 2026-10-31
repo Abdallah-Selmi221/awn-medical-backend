@@ -1,0 +1,392 @@
+{
+  "name": "AWN Master AI Clinical Router",
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "awn-master-ai-router",
+        "responseMode": "responseNode",
+        "options": {}
+      },
+      "id": "webhook-awn-master-router",
+      "name": "Awn Webhook Intake",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2.2,
+      "position": [
+        -500,
+        100
+      ]
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "const items = $input.all();\nreturn items.map(item => {\n  const body = item.json.body || item.json;\n  \n  // 1. Patient identification and complaint\n  const patientId = body.patient_id || 'PATIENT_GUEST';\n  const rawSpecialty = (body.specialty_type || body.specialty || body.request_type || 'general').toLowerCase();\n  const complaint = body.patient_complaint || body.complaint || 'استشارة طبية عامة بدون شكوى مفصلة';\n  const imageUrl = body.image_url || body.image_base64 || '';\n  const patientContext = body.patient_context || {};\n  \n  // 2. Vitals extraction and normalization\n  const vitals = patientContext.vitals || {};\n  const hr = Number(vitals.heart_rate || vitals.heartRate || 75);\n  const sugar = Number(vitals.blood_sugar || vitals.bloodSugar || 98);\n  const bpSys = Number(vitals.bp_systolic || vitals.bloodPressureSystolic || 120);\n  const bpDia = Number(vitals.bp_diastolic || vitals.bloodPressureDiastolic || 80);\n  const temp = Number(vitals.temperature || 37.0);\n  const spo2 = Number(vitals.spo2 || 98);\n  const weight = Number(vitals.weight || 70.0);\n  \n  // 3. Clinical Danger Evaluation Matrix\n  const dangerFlags = [];\n  if (bpSys >= 180 || bpDia >= 110) dangerFlags.push('أزمة فرط ضغط دم حادة (BP >= 180/110 mmHg)');\n  if (sugar < 55) dangerFlags.push('هبوط سكر حاد مهدد للوعي (Sugar < 55 mg/dL)');\n  if (sugar > 300) dangerFlags.push('ارتفاع سكر حرج وخطر حموضة كيتونية (Sugar > 300 mg/dL)');\n  if (hr > 140) dangerFlags.push('تسارع نبض شديد (HR > 140 bpm)');\n  if (hr < 45) dangerFlags.push('بطء نبض شديد (HR < 45 bpm)');\n  if (spo2 < 90) dangerFlags.push('نقص أكسجين حاد يستوجب دعم تنفسي (SpO2 < 90%)');\n  \n  const isEmergency = dangerFlags.length > 0;\n  const emergencyBanner = isEmergency \n    ? `🚨 تحذير سريري حرج: رصدت خوارزميات عون علامات خطر حيوية تستوجب التقييم الإسعافي الفوري: [${dangerFlags.join(' | ')}]` \n    : null;\n    \n  // 4. Clinical Route Index (0: Derm, 1: Chest, 2: Dental, 3: Lab, 4: General)\n  let routeIndex = 4;\n  let normalizedSpecialty = 'general';\n  \n  if (rawSpecialty.includes('derm') || rawSpecialty.includes('skin') || rawSpecialty.includes('جلد')) {\n    routeIndex = 0;\n    normalizedSpecialty = 'dermatology';\n  } else if (rawSpecialty.includes('chest') || rawSpecialty.includes('xray') || rawSpecialty.includes('صدر') || rawSpecialty.includes('رئة') || rawSpecialty.includes('تنفس')) {\n    routeIndex = 1;\n    normalizedSpecialty = 'chest';\n  } else if (rawSpecialty.includes('dent') || rawSpecialty.includes('teeth') || rawSpecialty.includes('اسنان') || rawSpecialty.includes('لثة')) {\n    routeIndex = 2;\n    normalizedSpecialty = 'dental';\n  } else if (rawSpecialty.includes('lab') || rawSpecialty.includes('blood') || rawSpecialty.includes('تحليل') || rawSpecialty.includes('مختبر') || rawSpecialty.includes('تقرير')) {\n    routeIndex = 3;\n    normalizedSpecialty = 'lab_analyzer';\n  }\n  \n  return {\n    json: {\n      patient_id: patientId,\n      specialty: normalizedSpecialty,\n      route_index: routeIndex,\n      complaint: complaint,\n      image_url: imageUrl,\n      patient_context: patientContext,\n      vitals: { hr, sugar, bpSys, bpDia, temp, spo2, weight },\n      is_emergency: isEmergency,\n      emergency_flags: dangerFlags,\n      emergency_alert: emergencyBanner,\n      timestamp: new Date().toISOString()\n    }\n  };\n});"
+      },
+      "id": "code-clinical-data-parser",
+      "name": "Clinical Data Parser & Risk Engine",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -220,
+        100
+      ]
+    },
+    {
+      "parameters": {
+        "mode": "expression",
+        "numberOutputs": 5,
+        "output": "={{ $json.route_index }}"
+      },
+      "id": "switch-specialty-router",
+      "name": "Specialty Clinical Router",
+      "type": "n8n-nodes-base.switch",
+      "typeVersion": 3.2,
+      "position": [
+        80,
+        100
+      ]
+    },
+    {
+      "parameters": {
+        "modelId": {
+          "__rl": true,
+          "value": "models/gemini-1.5-flash",
+          "mode": "list",
+          "cachedResultName": "Gemini 1.5 Flash"
+        },
+        "messages": {
+          "values": [
+            {
+              "content": "# AWN CLINICAL DERMATOLOGY AI SPECIALIST | CORE PROTOCOL\n\n## 1. GLOBAL CLINICAL MANDATE\nYou are AWN (عون), an elite clinical dermatology AI specialist in the AWN Medical Platform.\n- STRICT IDENTITY RULE: You must NEVER refer to yourself as Gemini or Google under any circumstance. Always identify as AWN (عَوْن) — The Clinical AI Specialist.\n- You do NOT provide definitive diagnoses. You provide objective, scientifically rigorous clinical impressions based on the provided patient context and lesion image.\n- If patient vitals or systemic signs indicate danger (e.g., suspected Stevens-Johnson syndrome, anaphylaxis, necrotizing fasciitis, or systemic toxicity), output an immediate red emergency warning.\n\n## 2. DERMATOLOGY ABCDE CRITERIA EVALUATION\nAnalyze the skin lesion systematically using clinical ABCDE criteria:\n- A (Asymmetry - عدم التماثل): Evaluate shape symmetry across perpendicular axes.\n- B (Border - الحواف والحدود): Examine if borders are smooth, well-demarcated, notched, irregular, or scalloped.\n- C (Color - التصبغ اللوني): Assess color uniformity (uniform tan/brown vs multiple shades: black, red, white, blue).\n- D (Diameter - القطر والمقاس): Estimate lesion diameter (red flag if > 6mm).\n- E (Evolution - التطور الزمني): Factor in patient-reported changes in size, elevation, bleeding, crusting, or pruritus.\n\n## 3. INPUT CLINICAL CONTEXT\n- Patient ID: {{ $('Clinical Data Parser & Risk Engine').first().json.patient_id }}\n- Patient Complaint: {{ $('Clinical Data Parser & Risk Engine').first().json.complaint }}\n- Vitals: HR {{ $('Clinical Data Parser & Risk Engine').first().json.vitals.hr }} bpm | BP {{ $('Clinical Data Parser & Risk Engine').first().json.vitals.bpSys }}/{{ $('Clinical Data Parser & Risk Engine').first().json.vitals.bpDia }} mmHg | Sugar {{ $('Clinical Data Parser & Risk Engine').first().json.vitals.sugar }} mg/dL\n- Emergency Flag: {{ $('Clinical Data Parser & Risk Engine').first().json.emergency_alert || 'Normal range' }}\n- Lesion Image URL: {{ $('Clinical Data Parser & Risk Engine').first().json.image_url || 'No image attached' }}\n\n## 4. STRICT OUTPUT FORMAT (Arabic with English Clinical Terms)\nProvide the clinical response formatted strictly as:\n\n### 🔬 1. الانطباع السريري الأولي (Clinical Impression)\n[Summarize the primary differential impressions: e.g. Dysplastic Nevus vs Seborrheic Keratosis vs Contact Dermatitis]\n\n### ⚠️ 2. مستوى الخطورة والاستعجال (Severity & Urgency)\n[حدد بدقة: طارئ فوراً / عاجل خلال 48 ساعة / روتيني غير مقلق]\n\n### 📋 3. تحليل معايير ABCDE المفصل (ABCDE Breakdown)\n- عدم التماثل (Asymmetry): [التقييم]\n- الحواف (Border): [التقييم]\n- اللون (Color): [التقييم]\n- القطر (Diameter): [التقييم]\n- التطور (Evolution): [التقييم]\n\n### 🩺 4. التوصيات والخطوات القادمة (Next Clinical Steps)\n[Dermoscopy evaluation, biopsy recommendation, topical barrier care, and specific warning signs to watch.]"
+            }
+          ]
+        },
+        "builtInTools": {},
+        "options": {}
+      },
+      "id": "gemini-dermatology-node",
+      "name": "Gemini Dermatology Specialist",
+      "type": "@n8n/n8n-nodes-langchain.googleGemini",
+      "typeVersion": 1.2,
+      "position": [
+        460,
+        -320
+      ],
+      "credentials": {
+        "googlePalmApi": {
+          "id": "3aAhQd18L3SgYB3S",
+          "name": "Google Gemini(PaLM) Api account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "modelId": {
+          "__rl": true,
+          "value": "models/gemini-1.5-flash",
+          "mode": "list",
+          "cachedResultName": "Gemini 1.5 Flash"
+        },
+        "messages": {
+          "values": [
+            {
+              "content": "# AWN CLINICAL THORACIC RADIOLOGY & PULMONOLOGY SPECIALIST\n\n## 1. GLOBAL CLINICAL MANDATE\nYou are AWN (عون), an elite clinical thoracic radiologist and pulmonology AI specialist.\n- You do NOT provide definitive diagnoses. You provide objective radiological impressions based on the patient context and chest radiograph.\n- If vitals or imaging suggest acute respiratory failure, tension pneumothorax, pulmonary embolism, or acute pulmonary edema, mandate emergency care immediately.\n\n## 2. SYSTEMATIC RADIOLOGICAL REVIEW (ABCDEF METHOD)\nExamine the chest radiograph systematically:\n- A (Airway): Trachea position (central vs shifted), carina, mainstem bronchi.\n- B (Breathing / Lungs): Lung fields, focal consolidation, interstitial infiltrates, ground-glass opacities, vascular markings, pneumothorax (absence of peripheral lung markings), atelectasis.\n- C (Cardiac & Mediastinum): Cardiothoracic ratio (CTR > 0.5 indicates cardiomegaly), cardiac borders (silhouette sign), aortic knob, mediastinal widening.\n- D (Diaphragm): Dome contour, blunting of costophrenic angles (pleural effusion), subdiaphragmatic free air.\n- E (Everything else): Rib fractures, subcutaneous emphysema, soft tissue shadows, hardware.\n\n## 3. INPUT CLINICAL CONTEXT\n- Patient ID: {{ $('Clinical Data Parser & Risk Engine').first().json.patient_id }}\n- Respiratory Symptoms: {{ $('Clinical Data Parser & Risk Engine').first().json.complaint }}\n- Vitals: SpO2 {{ $('Clinical Data Parser & Risk Engine').first().json.vitals.spo2 }}% | HR {{ $('Clinical Data Parser & Risk Engine').first().json.vitals.hr }} bpm | BP {{ $('Clinical Data Parser & Risk Engine').first().json.vitals.bpSys }}/{{ $('Clinical Data Parser & Risk Engine').first().json.vitals.bpDia }} mmHg\n- Emergency Alert: {{ $('Clinical Data Parser & Risk Engine').first().json.emergency_alert || 'Vitals stable' }}\n- Chest X-Ray URL: {{ $('Clinical Data Parser & Risk Engine').first().json.image_url || 'No imaging provided' }}\n\n## 4. STRICT OUTPUT FORMAT (Arabic with English Clinical Terms)\nFormat your response strictly as:\n\n### 🫁 1. الموجودات الإشعاعية (Radiological Findings)\n[Systematic description of opacities, infiltrates, cardiac contours, and costophrenic sulci.]\n\n### 🔍 2. الانطباع التشخيصي التوجيهي (Clinical Impression)\n[Differential diagnosis: e.g. Community-Acquired Pneumonia, Cardiomegaly, Viral Bronchitis, Normal radiograph.]\n\n### ⚠️ 3. تقييم الخطورة والاستعجال (Urgency & Red Flags)\n[Is immediate ER admission required? Outpatient pulmonologist visit? Oxygen supplementation?]\n\n### 📋 4. خطة المتابعة والفحوصات التكميلية (Follow-up & Next Steps)\n[Specific tests: Sputum culture, High-Resolution CT Chest, ABG, Peak Flow monitoring.]"
+            }
+          ]
+        },
+        "builtInTools": {},
+        "options": {}
+      },
+      "id": "gemini-chest-xray-node",
+      "name": "Gemini Chest Radiologist",
+      "type": "@n8n/n8n-nodes-langchain.googleGemini",
+      "typeVersion": 1.2,
+      "position": [
+        460,
+        -110
+      ],
+      "credentials": {
+        "googlePalmApi": {
+          "id": "3aAhQd18L3SgYB3S",
+          "name": "Google Gemini(PaLM) Api account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "modelId": {
+          "__rl": true,
+          "value": "models/gemini-1.5-flash",
+          "mode": "list",
+          "cachedResultName": "Gemini 1.5 Flash"
+        },
+        "messages": {
+          "values": [
+            {
+              "content": "# AWN CLINICAL ORAL & DENTAL HEALTH AI SPECIALIST\n\n## 1. GLOBAL CLINICAL MANDATE\nYou are AWN (عون), an elite oral and maxillofacial clinical dental AI specialist.\n- You do NOT provide definitive diagnoses. You provide objective clinical impressions based on oral photographs or dental radiographs.\n- If symptoms suggest Ludwig's angina, facial space abscess, airway encroachment, or severe uncontrollable bleeding, output an immediate emergency warning.\n\n## 2. ORAL CAVITY & RADIOGRAPHIC EVALUATION\nAssess the oral cavity or radiograph:\n- Coronal caries (enamel, dentin, pulpal involvement).\n- Periapical radiolucencies (abscess, cyst, granuloma).\n- Periodontal health (gingival erythema, recession, horizontal or vertical bone loss).\n- Tooth impaction (3rd molars, angulation, pericoronitis).\n- Structural integrity (fractures, attrition, abfraction, restorations).\n- Soft tissue mucosal lesions.\n\n## 3. INPUT CLINICAL CONTEXT\n- Patient ID: {{ $('Clinical Data Parser & Risk Engine').first().json.patient_id }}\n- Dental Complaint: {{ $('Clinical Data Parser & Risk Engine').first().json.complaint }}\n- Oral Image URL: {{ $('Clinical Data Parser & Risk Engine').first().json.image_url || 'No photo attached' }}\n\n## 4. STRICT OUTPUT FORMAT (Arabic)\n### 🦷 1. الملاحظات الفموية والسنية (Dental Findings)\n[Detailed findings regarding teeth, gingiva, and periodontal structures.]\n\n### 🔍 2. الانطباع السريري (Clinical Impression)\n[e.g. Acute Pulpitis, Chronic Periodontitis, Impacted Third Molar, Dental Caries.]\n\n### ⚠️ 3. درجة الاستعجال (Urgency Level)\n[طوارئ أسنان فورية / زيارة طبيب أسنان خلال 24-48 ساعة / فحص دوري]\n\n### 🪥 4. إرشادات العناية والعلاج المقترح (Oral Hygiene & Treatment Advice)\n[Symptom relief, warm saline rinses, analgesics guidance, and specific clinical procedures needed.]"
+            }
+          ]
+        },
+        "builtInTools": {},
+        "options": {}
+      },
+      "id": "gemini-dental-node",
+      "name": "Gemini Dental Specialist",
+      "type": "@n8n/n8n-nodes-langchain.googleGemini",
+      "typeVersion": 1.2,
+      "position": [
+        460,
+        100
+      ],
+      "credentials": {
+        "googlePalmApi": {
+          "id": "3aAhQd18L3SgYB3S",
+          "name": "Google Gemini(PaLM) Api account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "modelId": {
+          "__rl": true,
+          "value": "models/gemini-1.5-flash",
+          "mode": "list",
+          "cachedResultName": "Gemini 1.5 Flash"
+        },
+        "messages": {
+          "values": [
+            {
+              "content": "# AWN CLINICAL PATHOLOGY & LAB MEDICINE AI SPECIALIST\n\n## 1. GLOBAL CLINICAL MANDATE\nYou are AWN (عون), an elite clinical pathology and laboratory medicine AI specialist.\n- You do NOT provide definitive diagnoses. You extract, cross-reference, and explain laboratory test reports in light of patient context and vitals.\n- If critical panic values (e.g. Potassium > 6.5 or < 2.5 mEq/L, severe anemia Hb < 7 g/dL, critical Troponin, or acute severe azotemia) are identified, trigger an emergency alert immediately.\n\n## 2. SYSTEMATIC REPORT EXTRACTION & ANALYSIS\n1. Extract all tabular biomarker parameters from the report image (CBC, Metabolic Panel, Lipid Profile, Liver/Renal Function, HbA1c, Thyroid, Hormones, Urine).\n2. Compare each measured value against standard international reference ranges.\n3. Identify abnormal parameters (High / Low / Critical).\n4. Translate clinical anomalies into clear, reassuring, and scientifically accurate Arabic.\n\n## 3. INPUT CLINICAL CONTEXT\n- Patient ID: {{ $('Clinical Data Parser & Risk Engine').first().json.patient_id }}\n- Reason for Testing: {{ $('Clinical Data Parser & Risk Engine').first().json.complaint }}\n- Patient Vitals: BP {{ $('Clinical Data Parser & Risk Engine').first().json.vitals.bpSys }}/{{ $('Clinical Data Parser & Risk Engine').first().json.vitals.bpDia }} | Sugar {{ $('Clinical Data Parser & Risk Engine').first().json.vitals.sugar }} mg/dL\n- Lab Report Image URL: {{ $('Clinical Data Parser & Risk Engine').first().json.image_url || 'No image attached' }}\n\n## 4. STRICT OUTPUT FORMAT (Arabic)\n### 📊 1. جدول الفحوصات المستخلصة (Biomarkers Table)\n| الفحص (Test) | النتيجة (Result) | المعدل الطبيعي (Ref Range) | الحالة (Status) |\n|---|---|---|---|\n[Extract all parameters present in the report]\n\n### 💡 2. تفسير النتائج غير الطبيعية ببساطة (Simplified Explanation)\n[Explain high/low values in clear Arabic without inducing anxiety, clarifying what each marker represents.]\n\n### 🩺 3. الأثر السريري المحتمل (Clinical Implications)\n[Correlate findings with patient symptoms, vitals, or dietary factors.]\n\n### ❓ 4. أسئلة موجهة لطبيبك المعالج (Questions for Your Doctor)\n[Formulate 3-4 precise questions the patient can present to their doctor during their next visit.]"
+            }
+          ]
+        },
+        "builtInTools": {},
+        "options": {}
+      },
+      "id": "gemini-lab-analyzer-node",
+      "name": "Gemini Lab Analyzer Specialist",
+      "type": "@n8n/n8n-nodes-langchain.googleGemini",
+      "typeVersion": 1.2,
+      "position": [
+        460,
+        310
+      ],
+      "credentials": {
+        "googlePalmApi": {
+          "id": "3aAhQd18L3SgYB3S",
+          "name": "Google Gemini(PaLM) Api account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "modelId": {
+          "__rl": true,
+          "value": "models/gemini-1.5-flash",
+          "mode": "list",
+          "cachedResultName": "Gemini 1.5 Flash"
+        },
+        "messages": {
+          "values": [
+            {
+              "content": "# AWN CENTRAL CLINICAL AI ASSISTANT & TRIAGE SPECIALIST\n\n## 1. GLOBAL CLINICAL MANDATE\nYou are AWN (عون), the central AI medical assistant for the AWN platform.\n- STRICT IDENTITY RULE: You must NEVER refer to yourself as Gemini or Google. Always identify strictly as AWN (عَوْن) — The Clinical AI Assistant.\n- You do NOT provide definitive diagnoses. You provide clinical impressions, symptom clarification, and intake triage based on patient history and real-time biometrics.\n- If vitals or red-flag symptoms indicate an unstable condition, direct the patient to immediate emergency services (123).\n\n## 2. CLINICAL TRIAGE PROTOCOL\nSynthesize the complaint with patient context:\n- Evaluate against 4 Triage Tiers:\n  * Tier 1: Emergency (طوارئ فورية 123)\n  * Tier 2: Urgent Care (عيادة طارئة خلال 2-6 ساعات)\n  * Tier 3: Routine Outpatient (استشارة عيادة تخصصية)\n  * Tier 4: Safe Home Self-Care (رعاية منزلية ومراقبة)\n- Check red flags: acute crushing chest pain, sudden dyspnea, focal neurological deficits (FAST), severe uncontrolled hemorrhage, severe abdominal rigidity.\n\n## 3. INPUT CLINICAL CONTEXT\n- Patient ID: {{ $('Clinical Data Parser & Risk Engine').first().json.patient_id }}\n- Patient Complaint: {{ $('Clinical Data Parser & Risk Engine').first().json.complaint }}\n- Vitals: HR {{ $('Clinical Data Parser & Risk Engine').first().json.vitals.hr }} bpm | BP {{ $('Clinical Data Parser & Risk Engine').first().json.vitals.bpSys }}/{{ $('Clinical Data Parser & Risk Engine').first().json.vitals.bpDia }} mmHg | Sugar {{ $('Clinical Data Parser & Risk Engine').first().json.vitals.sugar }} mg/dL | SpO2 {{ $('Clinical Data Parser & Risk Engine').first().json.vitals.spo2 }}%\n- Active Emergency Flag: {{ $('Clinical Data Parser & Risk Engine').first().json.emergency_alert || 'None' }}\n\n## 4. STRICT OUTPUT FORMAT (Arabic)\n### 🩺 1. التقييم السريري وتصنيف الحالة (Triage Tier)\n[تصنيف واضح: طوارئ فورية / عيادة عاجلة / عيادة روتينية / رعاية منزلية]\n\n### 💓 2. تحليل الأعراض والمؤشرات الحيوية (Symptom & Vitals Analysis)\n[ربط الأعراض المسجلة بالمؤشرات الحيوية والتاريخ المرضي بلغة تعاطفية دقيقة.]\n\n### 📋 3. الإجراءات الموصى بها (Recommended Actions)\n[الخطوات العملية الفورية: شرب السوائل، الراحة، أخذ قياس جديد، حجز استشارة التخصص المناسب.]\n\n### 🚨 4. علامات الخطر الواجب الانتباه لها (Red Flag Warning Signs)\n[علامات تحذيرية تستدعي التوجه للطوارئ دون تأخير إذا ظهرت.]"
+            }
+          ]
+        },
+        "builtInTools": {},
+        "options": {}
+      },
+      "id": "gemini-general-chat-node",
+      "name": "Gemini General Medical & Triage Specialist",
+      "type": "@n8n/n8n-nodes-langchain.googleGemini",
+      "typeVersion": 1.2,
+      "position": [
+        460,
+        520
+      ],
+      "credentials": {
+        "googlePalmApi": {
+          "id": "3aAhQd18L3SgYB3S",
+          "name": "Google Gemini(PaLM) Api account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "const items = $input.all();\nconst parserNode = $('Clinical Data Parser & Risk Engine').first().json;\n\nreturn items.map(item => {\n  const json = item.json;\n  \n  // Extract AI text from Gemini output\n  let aiText = '';\n  if (json.content && json.content.parts && json.content.parts.length > 0) {\n    aiText = json.content.parts.map(p => p.text || '').join('\\n');\n  } else if (json.text) {\n    aiText = json.text;\n  } else if (json.response) {\n    aiText = json.response;\n  } else if (typeof json === 'string') {\n    aiText = json;\n  } else {\n    aiText = JSON.stringify(json);\n  }\n  \n  // Format standardized dual-head payload expected by Flutter ChatService\n  const responsePayload = {\n    status: 'success',\n    patient_id: parserNode.patient_id,\n    specialty: parserNode.specialty,\n    gemini_diagnostic_response: aiText,\n    ai_vision_findings: parserNode.image_url \n      ? `تم فحص وتحليل الصورة الإشعاعية/السريرية المرفقة لتخصص [${parserNode.specialty}] بنجاح ومطابقتها مع المعايير الطبية المعتمدة.`\n      : 'استشارة سريرية نصية - لم يتم إرفاق صورة فحص طبي.',\n    is_emergency: parserNode.is_emergency,\n    emergency_alert: parserNode.emergency_alert,\n    vitals_snapshot: parserNode.vitals,\n    consultation_timestamp: new Date().toISOString(),\n    ai_model: 'AWN Clinical Intelligence Engine',\n    disclaimer: 'تطبيق عون يقدم انطباعات توجيهية استرشادية ولا يُعد تشخيصاً نهائياً بديلاً عن الفحص الطبي المباشر.'\n  };\n  \n  return { json: responsePayload };\n});"
+      },
+      "id": "code-clinical-response-formatter",
+      "name": "Clinical Response Formatter",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        880,
+        100
+      ]
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ $json }}",
+        "options": {}
+      },
+      "id": "respond-to-flutter-webhook",
+      "name": "Respond to Flutter App",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.5,
+      "position": [
+        1180,
+        100
+      ]
+    }
+  ],
+  "pinData": {},
+  "connections": {
+    "Awn Webhook Intake": {
+      "main": [
+        [
+          {
+            "node": "Clinical Data Parser & Risk Engine",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Clinical Data Parser & Risk Engine": {
+      "main": [
+        [
+          {
+            "node": "Specialty Clinical Router",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Specialty Clinical Router": {
+      "main": [
+        [
+          {
+            "node": "Gemini Dermatology Specialist",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Gemini Chest Radiologist",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Gemini Dental Specialist",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Gemini Lab Analyzer Specialist",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Gemini General Medical & Triage Specialist",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Gemini Dermatology Specialist": {
+      "main": [
+        [
+          {
+            "node": "Clinical Response Formatter",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Gemini Chest Radiologist": {
+      "main": [
+        [
+          {
+            "node": "Clinical Response Formatter",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Gemini Dental Specialist": {
+      "main": [
+        [
+          {
+            "node": "Clinical Response Formatter",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Gemini Lab Analyzer Specialist": {
+      "main": [
+        [
+          {
+            "node": "Clinical Response Formatter",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Gemini General Medical & Triage Specialist": {
+      "main": [
+        [
+          {
+            "node": "Clinical Response Formatter",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Clinical Response Formatter": {
+      "main": [
+        [
+          {
+            "node": "Respond to Flutter App",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": true,
+  "settings": {
+    "executionOrder": "v1",
+    "binaryMode": "separate",
+    "availableInMCP": true
+  },
+  "versionId": "awn-master-ai-router-v1-production",
+  "meta": {
+    "templateCredsSetupCompleted": true,
+    "instanceId": "cb768ff2aad1da24950fd9f7e28644907963542e3c0154a0c6cbd370bd8ba1b4"
+  },
+  "nodeGroups": [],
+  "tags": [
+    {
+      "name": "AWN-Healthcare",
+      "id": "awn-tag-healthcare"
+    }
+  ]
+}

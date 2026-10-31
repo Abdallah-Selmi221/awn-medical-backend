@@ -1,0 +1,36 @@
+# Python & Bytecode
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+
+# Virtual Environments
+env/
+venv/
+.venv/
+ENV/
+
+# Sensitive Environment Configurations & Tokens
+.env
+.env.*
+kaggle.json
+
+# Raw Datasets & Local Training Artifacts
+datasets/
+kaggle_logs/
+kaggle_output/
+kernel-metadata.json
+*.ipynb
+build_notebook.py
+prepare_dataset.py
+deploy_n8n_workflows.py
+test_direct.py
+test_rag_endpoint.py
+
+# System & Editor Directories
+.idea/
+.vscode/
+*.log
+.DS_Store
+Thumbs.db
